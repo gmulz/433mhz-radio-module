@@ -1,0 +1,13 @@
+{
+  "module_name": "433mhz-rf",
+  "namespace": "grant-dev",
+  "language": "python",
+  "resource_type": "component",
+  "resource_subtype": "generic",
+  "model_name": "transmitter",
+  "enable_cloud_build": true,
+  "initialize_git": false,
+  "generator_version": "0.1.0",
+  "generated_on": "2025-05-30T22:51:18.655268Z",
+  "module_readme_link": "README.md"
+}

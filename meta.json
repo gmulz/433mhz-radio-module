@@ -1,0 +1,28 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "grant-dev:433mhz-rf",
+  "visibility": "public",
+  "url": "",
+  "description": "Modular generic component: transmitter",
+  "models": [
+    {
+      "api": "rdk:component:generic",
+      "model": "grant-dev:433mhz-rf:transmitter",
+      "short_description": "Provide a short (100 characters or less) description of this model here",
+      "markdown_link": "README.md#model-grant-dev433mhz-rftransmitter"
+    }
+  ],
+  "applications": null,
+  "markdown_link": "README.md",
+  "entrypoint": "dist/main",
+  "first_run": "",
+  "build": {
+    "build": "./build.sh",
+    "setup": "./setup.sh",
+    "path": "dist/archive.tar.gz",
+    "arch": [
+      "linux/amd64",
+      "linux/arm64"
+    ]
+  }
+}
