@@ -10,6 +10,12 @@
       "model": "grant-dev:433mhz-rf:transmitter",
       "short_description": "Provide a short (100 characters or less) description of this model here",
       "markdown_link": "README.md#model-grant-dev433mhz-rftransmitter"
+    },
+    {
+      "api": "rdk:component:sensor",
+      "model": "grant-dev:433mhz-rf:receiver",
+      "short_description": "Provide a short (100 characters or less) description of this model here",
+      "markdown_link": "README.md#model-grant-dev433mhz-rfreceiver"
     }
   ],
   "applications": null,

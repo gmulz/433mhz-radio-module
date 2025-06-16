@@ -5,25 +5,26 @@ from typing import (Any, ClassVar, Dict, Final, List, Mapping, Optional,
 
 from typing_extensions import Self
 from viam.components.generic import *
+from viam.components.sensor import Sensor
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.common import Geometry, ResourceName
 from viam.resource.base import ResourceBase
 from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
 from viam.components.board import Board
-from viam.utils import ValueTypes
+from viam.utils import ValueTypes, SensorReading
 from viam.logging import getLogger
-import asyncio
+import time
 
 MAX_CHANGES = 67
 
 Protocol = namedtuple('Protocol',
-                      ['pulselength', # microseconds
+                      ['pulselength',
                        'sync_high', 'sync_low',
                        'zero_high', 'zero_low',
                        'one_high', 'one_low'])
 PROTOCOLS = (None,
-             Protocol(3500, 1, 31, 1, 3, 3, 1),
+             Protocol(350, 1, 31, 1, 3, 3, 1),
              Protocol(650, 1, 10, 1, 2, 2, 1),
              Protocol(100, 30, 71, 4, 11, 9, 6),
              Protocol(380, 1, 6, 1, 3, 3, 1),
@@ -31,21 +32,26 @@ PROTOCOLS = (None,
              Protocol(200, 1, 10, 1, 5, 1, 1))
 
 
-class Transmitter(Generic, EasyResource):
+class Receiver(Sensor, EasyResource):
     # To enable debug-level logging, either run viam-server with the --debug option,
     # or configure your resource/machine to display debug logs.
-    MODEL: ClassVar[Model] = Model(ModelFamily("grant-dev", "433mhz-rf"), "transmitter")
+    MODEL: ClassVar[Model] = Model(ModelFamily("grant-dev", "433mhz-rf"), "receiver")
 
     board: Board
     data_pin: str
 
-    tx_protocol: int = 1
-    # microseconds
-    tx_pulselength: int = PROTOCOLS[tx_protocol].pulselength
-    tx_repeat: int = 10
-    tx_length: int = 24
-    
+    rx_tolerance = 80
+    rx_timings = [0] * (MAX_CHANGES + 1)
+    rx_last_timestamp = 0
+    rx_change_count = 0
+    rx_repeat_count = 0
 
+    rx_code = 0
+    rx_code_timestamp = None
+    rx_proto = None
+    rx_bitlength = None
+    rx_pulselength = None
+    
     @classmethod
     def new(
         cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]
@@ -97,57 +103,75 @@ class Transmitter(Generic, EasyResource):
         board_name = attrs["board"].string_value
         self.board = dependencies[Board.get_resource_name(board_name)]
         self.data_pin = attrs["data_pin"].string_value
+        self.gpio = self.board.gpio_pin_by_name(self.data_pin)
         return super().reconfigure(config, dependencies)
     
-    async def transmit_code(self, code: int, gpio: Board.GPIOPin):
-        rawcode = format(code, f'#0{self.tx_length + 2}b')[2:]
-        self.logger.info(f"Transmitting code: {str(code)}")
-        await self.transmit_binary(rawcode, gpio)
-        self.logger.info(f"Transmission complete")
-        return True
-    
-    async def transmit_binary(self, rawcode: str, gpio: Board.GPIOPin):
-        self.logger.info(f"Transmitting binary: {str(rawcode)}")
-        for _ in range(0, self.tx_repeat):
-            for byte in range(0, self.tx_length):
-                if rawcode[byte] == '0':
-                    await self.transmit_0(gpio)
-                else:
-                    await self.transmit_1(gpio)
-            await self.transmit_sync(gpio)
-        return True
-    
-    async def transmit_0(self, gpio: Board.GPIOPin):
-        return await self.transmit_waveform(
-            PROTOCOLS[self.tx_protocol].zero_high, 
-            PROTOCOLS[self.tx_protocol].zero_low, 
-            gpio)
+    async def receive_code(self):
+        data_interrupt = self.board.DigitalInterrupt(name=self.data_pin)
+        rising_edge_ts = -1
+        falling_edge_ts = -1
+        last_pulse_start_ts = -1
+        last_pulse_end_ts = -1
+        code = 0
+        async for tick in await self.board.stream_ticks([data_interrupt]):
+            # self.logger.info(f"Tick: {tick.time / 1000} microseconds {tick.high}")
+            if tick.high:
+                rising_edge_ts = tick.time
+            else:
+                falling_edge_ts = tick.time
+                
+            if falling_edge_ts > rising_edge_ts:
+                # pulse has ended
+                high_duration = falling_edge_ts - rising_edge_ts
+                if high_duration < 2500000:
+                    # filter out very short pulses as noise
+                    high_duration = -1
+                    rising_edge_ts = -1
+                    falling_edge_ts = -1
+                    continue
+                
+                # self.logger.info(f"Wave width: {high_duration / 1000} microseconds")
+                
+            
+                distance_from_last_pulse_end = rising_edge_ts - last_pulse_end_ts
 
-    async def transmit_1(self, gpio: Board.GPIOPin):
-        return await self.transmit_waveform(
-            PROTOCOLS[self.tx_protocol].one_high, 
-            PROTOCOLS[self.tx_protocol].one_low, 
-            gpio)
-    
-    async def transmit_sync(self, gpio: Board.GPIOPin):
-        return await self.transmit_waveform(
-            PROTOCOLS[self.tx_protocol].sync_high, 
-            PROTOCOLS[self.tx_protocol].sync_low, 
-            gpio)
+                if last_pulse_end_ts != -1:
 
-    async def transmit_waveform(self, highpulses: int, lowpulses: int, gpio: Board.GPIOPin):
-        await gpio.set(True)
-        await self._sleep((highpulses * self.tx_pulselength) / 1000000)
-        await gpio.set(False)
-        await self._sleep((lowpulses * self.tx_pulselength) / 1000000)
-        return True
-    
-    async def _sleep(self, delay):
-        _delay = delay / 100
-        end = time.time() + delay - _delay
-        while time.time() < end:
-            await asyncio.sleep(_delay) # seconds
+                    last_pulse_duration = last_pulse_end_ts - last_pulse_start_ts
 
+                    self.logger.info(f"Last pulse duration: {last_pulse_duration / 1000} us, distance from last pulse {distance_from_last_pulse_end / 1000} us")
+                    if distance_from_last_pulse_end > 15000000:
+                        # sync signal, set the reading
+                        self.rx_code = code
+                        self.logger.info(f"Sync signal, final code: {format(code, f'#024b')}")
+                        code = 0
+                    else:
+                        # data signal
+
+                        # short high followed by long low is a 0
+                        if last_pulse_duration < 6000000 and distance_from_last_pulse_end > 6000000:
+                            code <<= 1
+                            self.logger.info(f"Signal 0, Binary code: {format(code, f'#024b')}")
+
+                        # long high followed by short low is a 1
+                        if last_pulse_duration > 6000000 and distance_from_last_pulse_end < 6000000:
+                            code <<= 1
+                            code |= 1
+                            self.logger.info(f"Signal 1, Binary code: {format(code, f'#024b')}")
+                
+                last_pulse_start_ts = rising_edge_ts
+                last_pulse_end_ts = falling_edge_ts
+
+            
+                
+            
+    async def get_readings(
+        self,
+        *,
+        timeout: Optional[float] = None,
+        **kwargs
+    ) -> Mapping[str, SensorReading]:
+        return {"code": str(self.rx_code)}
 
     async def do_command(
         self,
@@ -156,13 +180,11 @@ class Transmitter(Generic, EasyResource):
         timeout: Optional[float] = None,
         **kwargs
     ) -> Mapping[str, ValueTypes]:
-        gpio = await self.board.gpio_pin_by_name(self.data_pin)
-        code = command.get("code")
-        if code:
-            await self.transmit_code(int(code), gpio)
-        else:
-            return {"success": False, "error": "code is required"}
-        return {"success": True}
+        
+        if command.get("receive"):
+            await self.receive_code()
+            return {"status": "received"}
+        return {}
 
     async def get_geometries(
         self, *, extra: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None
